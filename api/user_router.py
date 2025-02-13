@@ -1,9 +1,14 @@
 from fastapi import APIRouter, HTTPException, Query, status
-from models import User, UserCreate, UserBase, UserPatch
+from models import (
+    User, UserCreate, UserBase, UserPatch, PaginatedUsers,
+    Friendship, ReferralStats
+)
 from services.user_service import UserService
 from typing import List
-from models import PaginatedUsers
 from fastapi.responses import Response
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -166,4 +171,113 @@ async def delete_user(uuid: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete user"
+        )
+
+# Friendship endpoints
+@router.post("/{uuid_1}/friends/{uuid_2}", response_model=Friendship, status_code=status.HTTP_201_CREATED)
+async def create_friendship(uuid_1: str, uuid_2: str):
+    """Create a friendship between two users"""
+    try:
+        friendship = await UserService.send_friend_request(uuid_1, uuid_2)
+        return Friendship(**friendship)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create friendship"
+        )
+
+@router.get("/{user_uuid}/friends", response_model=List[User], status_code=status.HTTP_200_OK)
+async def get_user_friends(user_uuid: str):
+    """Get all friends of a user"""
+    try:
+        user = await UserService.get_user_by_uuid(user_uuid)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        friends = await UserService.get_friends(user_uuid)
+        return [User(**friend) for friend in friends]
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get friends"
+        )
+
+@router.delete("/{uuid_1}/friends/{uuid_2}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_friendship(uuid_1: str, uuid_2: str):
+    """Remove a friendship between two users"""
+    try:
+        logger.info(f"Attempting to remove friendship between {uuid_1} and {uuid_2}")
+        result = await UserService.remove_friend(uuid_1, uuid_2)
+        if not result:
+            logger.info("Friendship not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Friendship not found"
+            )
+        logger.info("Friendship successfully removed")
+        return {"friendship_uuid": result}
+    except ValueError as e:
+        logger.error(f"ValueError in remove_friendship: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in remove_friendship: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remove friendship"
+        )
+
+# Referral endpoints
+@router.get("/{user_uuid}/referrals", response_model=ReferralStats)
+async def get_referral_stats(user_uuid: str):
+    """Get user's referral statistics"""
+    try:
+        user = await UserService.get_user_by_uuid(user_uuid)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        total, referred_users = await UserService.get_referral_stats(user_uuid)
+        return ReferralStats(
+            total_referrals=total,
+            successful_referrals=[User(**user) for user in referred_users]
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get referral stats"
+        )
+
+@router.get("/{user_uuid}/referral-code")
+async def get_referral_code(user_uuid: str):
+    """Get user's referral code"""
+    try:
+        user = await UserService.get_user_by_uuid(user_uuid)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        return {"referral_code": user["referral_code"]}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get referral code"
         )

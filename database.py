@@ -6,11 +6,21 @@ class Database:
     
     @classmethod
     async def connect_db(cls):
-        # Using localhost MongoDB for development
         cls.client = AsyncIOMotorClient("mongodb://localhost:27017")
-        # Create unique indexes
-        await cls.client.user_db.users.create_index("uuid", unique=True)
-        await cls.client.user_db.users.create_index("email", unique=True)
+        db = cls.client.user_db
+        
+        # User indexes
+        await db.users.create_index("uuid", unique=True)
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("referral_code", unique=True)
+        
+        # Friendship indexes
+        await db.friendships.create_index("uuid", unique=True)
+        # Compound index for finding existing friendships
+        await db.friendships.create_index([
+            ("user1_uuid", 1),
+            ("user2_uuid", 1)
+        ], unique=True)
         
     @classmethod
     async def close_db(cls):

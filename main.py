@@ -5,6 +5,8 @@ from database import Database
 from api.user_router import router as user_router
 import uvicorn
 from models import RootResponse
+from strawberry.fastapi import GraphQLRouter
+from api.graphql_schema import schema
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -16,9 +18,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Simple CRUD API",
-
     lifespan=lifespan
 )
+
+# Create GraphQL router with GraphiQL playground enabled
+graphql_router = GraphQLRouter(
+    schema,
+    graphiql=True  # This enables the GraphiQL interface
+)
+
+# Add GraphQL routes to the app (make sure this is before other routes)
+app.include_router(graphql_router, prefix="/graphql")
 
 
 @app.get("/rapidoc", include_in_schema=False)
@@ -49,6 +59,7 @@ async def root() -> RootResponse:
         message="Welcome to the Users API",
         docs="/docs",
         endpoints={
+            "graphql_playground": "/graphql",  # Add this to show GraphQL endpoint
             "create_user": "POST /users/",
             "get_all_users": "GET /users/?page=1&page_size=10",
             "get_user": "GET /users/{uuid}",
