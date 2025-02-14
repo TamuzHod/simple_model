@@ -6,6 +6,7 @@ from models import UserBase, UserCreate, UserPatch
 from database import Database
 from utils.pagination import CursorPagination
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 class UserService:
     @staticmethod
@@ -46,7 +47,12 @@ class UserService:
             "updated_at": now
         })
         
-        await db.users.insert_one(user_dict)
+        try:
+            await db.users.insert_one(user_dict)
+        except DuplicateKeyError as e:
+            if "email_1 dup key" in str(e):
+                raise ValueError("Email already exists")
+            raise
         return user_dict
 
     @staticmethod
