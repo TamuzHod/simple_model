@@ -1,7 +1,6 @@
 from typing import List, Optional
 import strawberry
 from datetime import datetime
-from dataclasses import dataclass
 from services.user_service import UserService
 
 @strawberry.type
@@ -20,7 +19,7 @@ class PageInfo:
 class UserConnection:
     edges: List[UserEdge]
     page_info: PageInfo
-    total_count: int
+    total_count: int = 0  # Set default value to 0
 
 @strawberry.type
 class User:
@@ -31,49 +30,72 @@ class User:
     is_active: bool = strawberry.field(description="Whether the user is active")
     created_at: datetime = strawberry.field(description="When the user was created")
     updated_at: datetime = strawberry.field(description="When the user was last updated")
-    referred_by: Optional[str] = strawberry.field(description="UUID of user who referred this user")
+    referred_by: Optional[str] = strawberry.field(description="UUID of user who referred this user", default=None)
     referral_code: str = strawberry.field(description="User's unique referral code")
+
+    @classmethod
+    def from_db(cls, user_data: dict) -> 'User':
+        """Create a User instance from database data"""
+        # Remove MongoDB's _id field if present
+        user_dict = user_data.copy()
+        user_dict.pop('_id', None)
+        return cls(**user_dict)
 
     @strawberry.field
     async def friends(
         self,
-        first: Optional[int] = None,
-        after: Optional[str] = None,
-        last: Optional[int] = None,
-        before: Optional[str] = None
+        first: Optional[int] = 10,
+        after: Optional[str] = None
     ) -> UserConnection:
-        return await resolve_user_connection(
-            self.uuid,
-            first=first,
-            after=after,
-            last=last,
-            before=before,
-            friend_filter=True
+        """Get user's friends with pagination"""
+        friends, has_next_page = await UserService.get_friends(
+            user_uuid=self.uuid,
+            limit=first,
+            cursor=after
+        )
+
+        edges = []
+        for friend in friends:
+            edges.append(
+                UserEdge(
+                    cursor=str(friend['_id']),
+                    node=User.from_db(friend)
+                )
+            )
+
+        return UserConnection(
+            edges=edges,
+            page_info=PageInfo(
+                has_next_page=has_next_page,
+                has_previous_page=bool(after),
+                start_cursor=edges[0].cursor if edges else None,
+                end_cursor=edges[-1].cursor if edges else None
+            ),
+            total_count=len(edges)
         )
 
     @strawberry.field
     async def referred_users(
         self,
-        first: Optional[int] = None,
-        after: Optional[str] = None,
-        last: Optional[int] = None,
-        before: Optional[str] = None
+        first: Optional[int] = 10,
+        after: Optional[str] = None
     ) -> UserConnection:
+        """Get users referred by this user"""
         return await resolve_user_connection(
-            self.uuid,
             first=first,
             after=after,
-            last=last,
-            before=before,
-            referral_filter=True
+            filter=UserFilter(referred_by=self.uuid)  # Use the proper filter input type
         )
 
     @strawberry.field
     async def referrer(self) -> Optional['User']:
+        """Get the user who referred this user"""
         if not self.referred_by:
             return None
         user_data = await UserService.get_user_by_uuid(self.referred_by)
-        return User(**user_data) if user_data else None
+        if not user_data:
+            return None
+        return User.from_db(user_data)
 
     @strawberry.field
     async def friendship_status(self, other_user_uuid: str) -> 'FriendshipStatus':
@@ -83,9 +105,10 @@ class User:
     async def mutual_friends(
         self,
         with_user_uuid: str,
-        first: Optional[int] = None,
+        first: Optional[int] = 10,
         after: Optional[str] = None
     ) -> UserConnection:
+        """Get mutual friends between this user and another user"""
         return await resolve_mutual_friends(
             self.uuid,
             with_user_uuid,
@@ -126,102 +149,132 @@ class ReferralStats:
 class UserFilter:
     """Filter options for users query"""
     name_contains: Optional[str] = strawberry.field(
-        description="Filter users by name containing this string"
+        description="Filter users by name containing this string",
+        default=None
     )
     email_contains: Optional[str] = strawberry.field(
-        description="Filter users by email containing this string"
+        description="Filter users by email containing this string",
+        default=None
     )
     is_active: Optional[bool] = strawberry.field(
-        description="Filter users by active status"
+        description="Filter users by active status",
+        default=None
     )
     created_after: Optional[datetime] = strawberry.field(
-        description="Filter users created after this datetime"
+        description="Filter users created after this datetime",
+        default=None
     )
     created_before: Optional[datetime] = strawberry.field(
-        description="Filter users created before this datetime"
+        description="Filter users created before this datetime",
+        default=None
     )
-
+    friend_of: Optional[str] = strawberry.field(
+        description="Filter users who are friends with the specified user UUID",
+        default=None
+    )
+    referred_by: Optional[str] = strawberry.field(
+        description="Filter users who were referred by the specified user UUID",
+        default=None
+    )
+    
 @strawberry.input
 class UserOrder:
     field: str
     direction: str
 
 async def resolve_user_connection(
-    user_uuid: Optional[str] = None,
-    first: Optional[int] = None,
+    first: Optional[int] = 10,
     after: Optional[str] = None,
-    last: Optional[int] = None,
-    before: Optional[str] = None,
-    friend_filter: bool = False,
-    referral_filter: bool = False,
     filter: Optional[UserFilter] = None,
     order_by: Optional[UserOrder] = None
 ) -> UserConnection:
-    # Convert filter to dict for UserService
-    filter_params = None
+    filter_params = {}
     if filter:
-        filter_params = {
-            'name_contains': filter.name_contains,
-            'email_contains': filter.email_contains,
-            'is_active': filter.is_active,
-            'created_after': filter.created_after,
-            'created_before': filter.created_before
-        }
-        # Remove None values
-        filter_params = {k: v for k, v in filter_params.items() if v is not None}
-
-    # Convert order_by to dict for UserService
-    order_params = None
+        # Convert filter to dict and remove None values
+        filter_params = {k: v for k, v in filter.__dict__.items() if v is not None}
+    
     if order_by:
-        order_params = {
-            'field': order_by.field,
-            'direction': order_by.direction
-        }
+        order_dict = {"field": order_by.field, "direction": order_by.direction}
+    else:
+        order_dict = None
 
-    # Get users with cursor-based pagination
-    users, has_next_page = await UserService.get_users_with_cursor(
-        limit=first or 10,
-        cursor=after,
+    users, has_next_page = await UserService.get_users_with_filters(
+        first=first,
+        after=after,
         filter_params=filter_params,
-        order_by=order_params
+        order_by=order_dict
     )
 
-    # Create edges
-    edges = [
-        UserEdge(
-            cursor=str(user['_id']),
-            node=User(**user)
-        ) for user in users
-    ]
+    edges = []
+    for user in users:
+        edges.append(
+            UserEdge(
+                cursor=str(user['_id']),
+                node=User.from_db(user)
+            )
+        )
 
-    # Create page info
-    page_info = PageInfo(
-        has_next_page=has_next_page,
-        has_previous_page=False if not before else True,
-        start_cursor=edges[0].cursor if edges else None,
-        end_cursor=edges[-1].cursor if edges else None
-    )
-
-    # Get total count (this might need optimization for large datasets)
-    total_count = await UserService.get_users_count()
+    # Get filtered count instead of total users count
+    try:
+        total_count = await UserService.get_filtered_users_count(filter_params)
+    except Exception:
+        total_count = 0  # Fallback to 0 if count query fails
 
     return UserConnection(
         edges=edges,
-        page_info=page_info,
+        page_info=PageInfo(
+            has_next_page=has_next_page,
+            has_previous_page=bool(after),
+            start_cursor=edges[0].cursor if edges else None,
+            end_cursor=edges[-1].cursor if edges else None
+        ),
         total_count=total_count
     )
 
 async def resolve_friendship_status(user1_uuid: str, user2_uuid: str) -> FriendshipStatus:
-    # Implementation to check friendship status
-    # This would be implemented in UserService
-    pass
+    """
+    Resolves the friendship status between two users.
+    Returns a FriendshipStatus object containing:
+    - are_friends: whether the users are friends
+    - friendship_date: when they became friends (if they are friends)
+    - friendship_uuid: unique identifier of their friendship (if they are friends)
+    """
+    status = await UserService.get_friendship_status(user1_uuid, user2_uuid)
+    return FriendshipStatus(
+        are_friends=status['are_friends'],
+        friendship_date=status['friendship_date'],
+        friendship_uuid=status['friendship_uuid']
+    )
 
 async def resolve_mutual_friends(
     user1_uuid: str,
     user2_uuid: str,
-    first: Optional[int] = None,
+    first: Optional[int] = 10,
     after: Optional[str] = None
 ) -> UserConnection:
-    # Implementation to find mutual friends
-    # This would be implemented in UserService
-    pass
+    """Resolve mutual friends between two users"""
+    users, has_next_page = await UserService.get_mutual_friends(
+        user1_uuid,
+        user2_uuid,
+        first=first,
+        after=after
+    )
+
+    edges = [
+        UserEdge(
+            cursor=str(user['_id']),
+            node=User(**user)
+        )
+        for user in users
+    ]
+
+    return UserConnection(
+        edges=edges,
+        page_info=PageInfo(
+            has_next_page=has_next_page,
+            has_previous_page=bool(after),
+            start_cursor=edges[0].cursor if edges else None,
+            end_cursor=edges[-1].cursor if edges else None
+        ),
+        total_count=len(edges)
+    )

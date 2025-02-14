@@ -1,24 +1,36 @@
 from datetime import datetime
-import uuid
-from typing import List, Tuple, Optional, Dict, Any
-from models import UserCreate, UserBase, UserPatch
-from database import Database
 import secrets
+from typing import Optional, Dict, Any, Tuple, List
+import uuid
+from models import UserBase, UserCreate, UserPatch
+from database import Database
+from utils.pagination import CursorPagination
 from bson import ObjectId
 
 class UserService:
     @staticmethod
+    def _generate_referral_code() -> str:
+        return secrets.token_urlsafe(8)
+
+    @staticmethod
+    async def _ensure_unique_referral_code() -> str:
+        db = Database.get_db()
+        while True:
+            code = UserService._generate_referral_code()
+            existing = await db.users.find_one({"referral_code": code})
+            if not existing:
+                return code
+
+    @staticmethod
     async def create_user(user: UserCreate) -> dict:
         db = Database.get_db()
         user_dict = user.model_dump()
-        del user_dict["password"]  # In a real app, you'd hash the password
+        
+        # Handle password (in real app, would hash it)
+        del user_dict["password"]
         
         # Generate unique referral code
-        while True:
-            referral_code = secrets.token_urlsafe(8)
-            existing = await db.users.find_one({"referral_code": referral_code})
-            if not existing:
-                break
+        user_dict["referral_code"] = await UserService._ensure_unique_referral_code()
         
         # Handle referral
         if user.referral_code:
@@ -26,15 +38,16 @@ class UserService:
             if referrer:
                 user_dict["referred_by"] = referrer["uuid"]
         
-        # Add server-generated fields
+        # Add timestamps
         now = datetime.now()
-        user_dict["uuid"] = str(uuid.uuid4())
-        user_dict["created_at"] = now
-        user_dict["updated_at"] = now
-        user_dict["referral_code"] = referral_code
+        user_dict.update({
+            "uuid": str(ObjectId()),
+            "created_at": now,
+            "updated_at": now
+        })
         
         await db.users.insert_one(user_dict)
-        return await db.users.find_one({"uuid": user_dict["uuid"]})
+        return user_dict
 
     @staticmethod
     async def get_referral_stats(user_uuid: str) -> Tuple[int, List[dict]]:
@@ -81,26 +94,67 @@ class UserService:
         return friendship
 
     @staticmethod
-    async def get_friends(user_uuid: str) -> List[dict]:
+    async def get_friends(  
+        user_uuid: str,
+        limit: Optional[int] = 10,
+        cursor: Optional[str] = None
+    ) -> Tuple[List[dict], bool]:
+        """Get friends of a user with pagination"""
         db = Database.get_db()
         
-        friendships = await db.friendships.find({
-            "$or": [
-                {"user1_uuid": user_uuid},
-                {"user2_uuid": user_uuid}
-            ]
-        }).to_list(length=None)
+        # Find all friendships where the user is either user1 or user2
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"user1_uuid": user_uuid},
+                        {"user2_uuid": user_uuid}
+                    ]
+                }
+            },
+            {
+                "$addFields": {
+                    "friend_uuid": {
+                        "$cond": {
+                            "if": {"$eq": ["$user1_uuid", user_uuid]},
+                            "then": "$user2_uuid",
+                            "else": "$user1_uuid"
+                        }
+                    }
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "users",
+                    "localField": "friend_uuid",
+                    "foreignField": "uuid",
+                    "as": "friend"
+                }
+            },
+            {
+                "$unwind": "$friend"
+            },
+            {
+                "$replaceRoot": { "newRoot": "$friend" }
+            }
+        ]
+
+        if cursor:
+            pipeline.insert(0, {
+                "$match": {
+                    "_id": {"$gt": ObjectId(cursor)}
+                }
+            })
+
+        # Add limit + 1 to check for next page
+        pipeline.append({"$limit": limit + 1})
         
-        friend_uuids = []
-        for friendship in friendships:
-            friend_uuid = friendship["user2_uuid"] if friendship["user1_uuid"] == user_uuid \
-                         else friendship["user1_uuid"]
-            friend_uuids.append(friend_uuid)
+        friends = await db.friendships.aggregate(pipeline).to_list(length=None)
         
-        if not friend_uuids:
-            return []
-            
-        return await db.users.find({"uuid": {"$in": friend_uuids}}).to_list(length=None)
+        has_next_page = len(friends) > limit
+        friends = friends[:limit]  # Remove the extra item if it exists
+        
+        return friends, has_next_page
 
     @staticmethod
     async def remove_friend(uuid_1: str, uuid_2: str) -> bool:
@@ -131,7 +185,7 @@ class UserService:
         return total, users
 
     @staticmethod
-    async def get_user_by_uuid(uuid: str):
+    async def get_user_by_uuid(uuid: str) -> Optional[dict]:
         db = Database.get_db()
         return await db.users.find_one({"uuid": uuid})
 
@@ -154,23 +208,19 @@ class UserService:
         return None
 
     @staticmethod
-    async def patch_user(uuid: str, user: UserPatch):
+    async def patch_user(uuid: str, patch: UserPatch) -> Optional[dict]:
         db = Database.get_db()
-        update_data = {
-            k: v for k, v in user.model_dump().items() 
-            if v is not None
-        }
-        if not update_data:
-            return None
+        update_data = patch.model_dump(exclude_unset=True)
         
-        update_data["updated_at"] = datetime.now()
-        result = await db.users.update_one(
-            {"uuid": uuid},
-            {"$set": update_data}
-        )
-        if result.modified_count > 0:
-            return await db.users.find_one({"uuid": uuid})
-        return None
+        if update_data:
+            update_data["updated_at"] = datetime.now()
+            result = await db.users.find_one_and_update(
+                {"uuid": uuid},
+                {"$set": update_data},
+                return_document=True
+            )
+            return result
+        return await UserService.get_user_by_uuid(uuid)
 
     @staticmethod
     async def delete_user(uuid: str) -> bool:
@@ -189,61 +239,47 @@ class UserService:
         return [user async for user in db.users.find({"is_active": True})]
 
     @staticmethod
-    async def get_users_with_cursor(
-        limit: int,
-        cursor: Optional[str] = None,
+    async def get_users_with_filters(
+        first: int = 10,
+        after: Optional[str] = None,
         filter_params: Optional[Dict[str, Any]] = None,
         order_by: Optional[Dict[str, str]] = None,
         search_query: Optional[str] = None
-    ):
-        db = Database.get_db()
-        query = {}
+    ) -> Tuple[List[dict], bool]:
+        paginator = CursorPagination(
+            collection_name='users',
+            model_class=dict,
+            field_mappings={
+                'name_contains': 'name',
+                'email_contains': 'email',
+                'created_after': 'created_at',
+                'created_before': 'created_at',
+                'is_active': 'is_active'
+            }
+        )
 
-        # Handle cursor-based pagination
-        if cursor:
-            cursor_obj = ObjectId(cursor)
-            query['_id'] = {'$gt': cursor_obj}
-
-        # Handle filtering
-        if filter_params:
-            if filter_params.get('name_contains'):
-                query['name'] = {'$regex': filter_params['name_contains'], '$options': 'i'}
-            if filter_params.get('email_contains'):
-                query['email'] = {'$regex': filter_params['email_contains'], '$options': 'i'}
-            if filter_params.get('is_active') is not None:
-                query['is_active'] = filter_params['is_active']
-            if filter_params.get('created_after'):
-                query['created_at'] = {'$gt': filter_params['created_after']}
-            if filter_params.get('created_before'):
-                query.setdefault('created_at', {})['$lt'] = filter_params['created_before']
-
-        # Handle search
+        # Handle search query
         if search_query:
-            query['$or'] = [
-                {'name': {'$regex': search_query, '$options': 'i'}},
-                {'email': {'$regex': search_query, '$options': 'i'}}
+            filter_params = filter_params or {}
+            filter_params['$or'] = [
+                {'name_contains': search_query},
+                {'email_contains': search_query}
             ]
 
-        # Handle sorting
-        sort_params = [('_id', 1)]  # default sorting
-        if order_by:
-            sort_params = [(order_by['field'], 1 if order_by['direction'] == 'ASC' else -1)]
-
-        # Execute query
-        cursor = db.users.find(query).sort(sort_params).limit(limit + 1)
-        users = await cursor.to_list(length=limit + 1)
-
-        # Check if there are more results
-        has_next_page = len(users) > limit
-        if has_next_page:
-            users = users[:-1]
-
-        return users, has_next_page
+        return await paginator.paginate(
+            first=first,
+            after=after,
+            filter_params=filter_params,
+            order_by=order_by
+        )
 
     @staticmethod
-    async def get_mutual_friends(user1_uuid: str, user2_uuid: str, limit: int, cursor: Optional[str] = None):
-        db = Database.get_db()
-        
+    async def get_mutual_friends(
+        user1_uuid: str,
+        user2_uuid: str,
+        limit: int = 10,
+        cursor: Optional[str] = None
+    ) -> Tuple[List[dict], bool]:
         # Get friends of both users
         user1_friends = set(friend['uuid'] for friend in await UserService.get_friends(user1_uuid))
         user2_friends = set(friend['uuid'] for friend in await UserService.get_friends(user2_uuid))
@@ -251,18 +287,17 @@ class UserService:
         # Find mutual friends
         mutual_friend_uuids = list(user1_friends.intersection(user2_friends))
         
-        query = {'uuid': {'$in': mutual_friend_uuids}}
-        if cursor:
-            query['_id'] = {'$gt': ObjectId(cursor)}
-            
-        cursor = db.users.find(query).limit(limit + 1)
-        users = await cursor.to_list(length=limit + 1)
+        paginator = CursorPagination(
+            collection_name='users',
+            model_class=dict,
+            field_mappings={}
+        )
         
-        has_next_page = len(users) > limit
-        if has_next_page:
-            users = users[:-1]
-            
-        return users, has_next_page
+        return await paginator.paginate(
+            first=limit,
+            after=cursor,
+            filter_params={'uuid': {'$in': mutual_friend_uuids}}
+        )
 
     @staticmethod
     async def get_friendship(uuid: str) -> Optional[dict]:
@@ -291,3 +326,29 @@ class UserService:
             'friendship_date': None,
             'friendship_uuid': None
         }
+
+    @staticmethod
+    async def get_filtered_users_count(filter_params: Dict[str, Any] = None) -> int:
+        """Get count of users matching the filter criteria"""
+        try:
+            db = Database.get_db()
+            query = {}
+            
+            if filter_params:
+                if 'name_contains' in filter_params:
+                    query['name'] = {'$regex': filter_params['name_contains'], '$options': 'i'}
+                if 'email_contains' in filter_params:
+                    query['email'] = {'$regex': filter_params['email_contains'], '$options': 'i'}
+                if 'is_active' in filter_params:
+                    query['is_active'] = filter_params['is_active']
+                if 'created_after' in filter_params:
+                    query['created_at'] = {'$gt': filter_params['created_after']}
+                if 'created_before' in filter_params:
+                    query.setdefault('created_at', {})['$lt'] = filter_params['created_before']
+                if 'referred_by' in filter_params:
+                    query['referred_by'] = filter_params['referred_by']
+            
+            count = await db.users.count_documents(query)
+            return int(count)  # Ensure we return an integer
+        except Exception:
+            return 0  # Return 0 if anything goes wrong

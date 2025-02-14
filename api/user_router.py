@@ -4,7 +4,7 @@ from models import (
     Friendship, ReferralStats
 )
 from services.user_service import UserService
-from typing import List
+from typing import List, Optional
 from fastapi.responses import Response
 import logging
 
@@ -35,29 +35,28 @@ async def create_user(user: UserCreate):
 
 @router.get("/", response_model=PaginatedUsers, status_code=status.HTTP_200_OK)
 async def read_users(
-    page: int = Query(default=1, ge=1, description="Page number"),
-    page_size: int = Query(default=10, ge=1, le=100, description="Items per page"),
-    active: bool = Query(None, description="Filter by active status")
+    first: int = Query(default=10, ge=1, le=100, description="Number of items to fetch"),
+    after: Optional[str] = Query(None, description="Cursor for pagination"),
+    active: Optional[bool] = Query(None, description="Filter by active status")
 ):
     try:
-        skip = (page - 1) * page_size
-        if active is not None:
-            users = await UserService.get_active_users() if active else []
-            total = len(users)
-            users = users[skip:skip + page_size]
-        else:
-            total, users = await UserService.get_users(skip, page_size)
+        filter_params = {"is_active": active} if active is not None else None
+        users, has_next_page = await UserService.get_users_with_filters(
+            first=first,
+            after=after,
+            filter_params=filter_params
+        )
         
         return PaginatedUsers(
-            total=total,
-            page=page,
-            page_size=page_size,
-            items=[User(**user) for user in users]
+            items=[User(**user) for user in users],
+            cursor=users[-1]["_id"] if users else None,
+            has_next_page=has_next_page,
+            total=await UserService.get_users_count()  # Keep total count for UI purposes
         )
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve users"
+            detail=str(e)
         )
 
 @router.head("/", status_code=status.HTTP_200_OK)
@@ -188,7 +187,7 @@ async def create_friendship(uuid_1: str, uuid_2: str):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create friendship"
+            detail=f"Failed to create friendship {e}"
         )
 
 @router.get("/{user_uuid}/friends", response_model=List[User], status_code=status.HTTP_200_OK)

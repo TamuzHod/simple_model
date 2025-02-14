@@ -11,23 +11,19 @@ class Query:
     @strawberry.field
     async def user(self, uuid: str) -> Optional[User]:
         user_data = await UserService.get_user_by_uuid(uuid)
-        return User(**user_data) if user_data else None
+        return User.from_db(user_data) if user_data else None
 
     @strawberry.field
     async def users(
         self,
         first: Optional[int] = 10,
         after: Optional[str] = None,
-        last: Optional[int] = None,
-        before: Optional[str] = None,
         filter: Optional[UserFilter] = None,
         order_by: Optional[UserOrder] = None
     ) -> UserConnection:
         return await resolve_user_connection(
             first=first,
             after=after,
-            last=last,
-            before=before,
             filter=filter,
             order_by=order_by
         )

@@ -1,0 +1,11 @@
+README.md
+setup.py
+scripts/__init__.py
+scripts/seed_database.py
+services/__init__.py
+services/user_service.py
+simple_model.egg-info/PKG-INFO
+simple_model.egg-info/SOURCES.txt
+simple_model.egg-info/dependency_links.txt
+simple_model.egg-info/requires.txt
+simple_model.egg-info/top_level.txt

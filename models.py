@@ -2,7 +2,6 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Dict
 from datetime import datetime
 import uuid
-from enum import Enum
 
 
 # Place holder
@@ -29,17 +28,20 @@ class User(UserBase):
     uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
-    referred_by: Optional[str] = None  # UUID of user who referred this user
+    referred_by: Optional[str] = Field(default=None)  # UUID of user who referred this user
     referral_code: str  # Unique code for referring others
 
     class Config:
         from_attributes = True
 
 class PaginatedUsers(BaseModel):
-    total: int
-    page: int
-    page_size: int
     items: List[User]
+    cursor: Optional[str] = None
+    has_next_page: bool = False
+    total: int
+
+    class Config:
+        from_attributes = True
 
 class Friendship(BaseModel):
     uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
