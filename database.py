@@ -1,12 +1,19 @@
+import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 class Database:
     client: Optional[AsyncIOMotorClient] = None
     
     @classmethod
     async def connect_db(cls):
-        cls.client = AsyncIOMotorClient("mongodb://localhost:27017")
+        cls.client = AsyncIOMotorClient(
+            f"mongodb://{os.environ['MONGODB_USER']}:{os.environ['MONGODB_PASSWORD']}@"
+            f"{os.environ['MONGODB_HOST']}:{os.environ['MONGODB_PORT']}"
+        )
         db = cls.client.user_db
         
         # User indexes

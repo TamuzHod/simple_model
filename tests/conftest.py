@@ -1,4 +1,6 @@
 import pytest
+import os
+from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Dict
 from database import Database
@@ -8,7 +10,13 @@ from database import Database
 async def setup_test_database():
     """Setup a test database connection before each test and cleanup after."""
     # Use a test database
-    Database.client = AsyncIOMotorClient("mongodb://localhost:27017")
+    
+    load_dotenv()
+    
+    Database.client = AsyncIOMotorClient(
+        f"mongodb://{os.environ['MONGODB_USER']}:{os.environ['MONGODB_PASSWORD']}@"
+        f"{os.environ['MONGODB_HOST']}:{os.environ['MONGODB_PORT']}"
+    )
     Database.client.get_database("test_user_db")
     
     # Setup indexes
