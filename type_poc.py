@@ -1,8 +1,11 @@
 from __future__ import annotations  # Required for self-referencing types
 
+import json
 import uuid
 from datetime import datetime
 from typing import Annotated, Optional, ForwardRef, List, TypeVar, Generic, Type, Any, Union
+from pydantic._internal._generics import get_args
+
 
 from pydantic import BaseModel, StringConstraints, ConfigDict, Field
 
@@ -42,8 +45,37 @@ class JelloEntity(BaseModel):
 
 
 
-def Association(
-    entityType: Type[JelloEntity],
+T = TypeVar('T', bound=JelloEntity)
+
+class Association(BaseModel, Generic[T]):
+    def __init__(
+        self,
+        entityType: Type[T],
+        mappedBy: str,
+        filteredBy: Optional[str] = None,
+
+    ):
+        self.entityType = entityType
+        self.mappedBy = mappedBy
+        self.filteredBy = filteredBy
+
+    uuids: Optional[List[UUID4Str]] = None
+    instances: Optional[List[T]] = None
+    def get_instances(self) -> List[T]:
+        if self.instances is None:
+            self.instances = [{'uuid': uuid, 'name': 'C-123'} for uuid in self.uuids]  # Replace with actual instance retrieval
+        return self.instances
+    def get_uuids(self) -> List[UUID4Str]:
+        if self.uuids is None:
+            self.uuids = [instance['uuid'] for instance in self.instances]  # Replace with actual instance retrieval
+        return self.uuids
+    def count(self) -> int:
+        if self.uuids is not None:
+            return len(self.uuids)
+        return 7  # Replace with actual count retrieval
+    
+
+def association(
     mappedBy: str,
     filteredBy: Optional[str] = None,
     **kwargs: Any
@@ -51,7 +83,6 @@ def Association(
     json_schema_extra = {
         'association': {
             'mappedBy': mappedBy,
-            'entityType': entityType.__forward_arg__ if isinstance(entityType, ForwardRef) else entityType.__name__,
         }
     }
 
@@ -62,32 +93,25 @@ def Association(
         existing_extra = kwargs.pop('json_schema_extra')
         json_schema_extra.update(existing_extra)
 
-    return Field(**kwargs, json_schema_extra=json_schema_extra)
+    return Field(**kwargs, json_schema_extra=json_schema_extra)    
 
 
-def Ref(entityType: Type[JelloEntity], **kwargs: Any) -> Any:
-    json_schema_extra = {
-        'ref': {
-            'entityType': entityType.__name__,
-        }
-    }
-
-    # Merge any existing json_schema_extra from kwargs
-    if 'json_schema_extra' in kwargs:
-        existing_extra = kwargs.pop('json_schema_extra')
-        json_schema_extra.update(existing_extra)
-
-    return Field(UUID4Str, **kwargs, json_schema_extra=json_schema_extra)
+class Ref(BaseModel, Generic[T]):
+    entityType: Type[T]
+    instance: Optional[T]
+    uuid: Optional[UUID4Str]
+    def get_instance(self) -> T:
+        if self.instance is None:
+            self.instance = {'uuid': self.uuid, 'name': 'C-123'}  # Replace with actual instance retrieval
+        return self.instance
 
 
 class Category(JelloEntity):
     name: str
     description: Optional[str] = None
-    parent: Optional[Ref(Category)] = None  # ???
-    p3: Ref(Product, required=True)
-    p2: Ref(Product)
-    products: Association(Product, mappedBy='category_ref')
-    cheapestInCategory: Association(Product, mappedBy='category', filteredBy="price<99")
+    parent: Optional[Ref[Category]] = None
+    products: Association[Product] = association(mappedBy='category_ref')
+    cheapestInCategory: Association[Product] = association(mappedBy='category',filteredBy="price<99")
 
 
 class Product(JelloEntity):
@@ -95,9 +119,27 @@ class Product(JelloEntity):
     description: Optional[str] = None
     price: float
     category_embedded: Category
-    category_ref: Ref(Category)
+    category_ref: Ref[Category]
     
 if __name__ == '__main__':
-    n = int(input("Enter a number: s"))
-    for i in range(1,n+1):
-        print(i,end="")
+
+    print("categor ref metadata:")
+    field = Product.model_fields['category_ref']
+    entityType = get_args(field.annotation)[0].__name__
+    print(f"entityType: {entityType}")
+
+    
+    print("\ncheapestInCategory Association metadata:")
+    field = Category.model_fields['cheapestInCategory']
+    association_info = {
+        "entityType": get_args(field.annotation)[0].__name__,  # Get the generic type argument (Product)
+        "mappedBy": field.json_schema_extra['association']['mappedBy'],
+        "filteredBy": field.json_schema_extra['association']['filteredBy']
+    }
+    print(json.dumps(association_info, indent=2))
+
+
+    print("\nCategory schema:")
+    print(json.dumps(Category.model_json_schema(), indent=2))
+
+
