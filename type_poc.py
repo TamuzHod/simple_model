@@ -3,7 +3,7 @@ from __future__ import annotations  # Required for self-referencing types
 import json
 import uuid
 from datetime import datetime
-from typing import Annotated, Optional, ForwardRef, List, TypeVar, Generic, Type, Any, Union
+from typing import _SpecialForm, Annotated, Optional, ForwardRef, List, TypeVar, Generic, Type, Any, Union
 from pydantic._internal._generics import get_args
 
 
@@ -12,10 +12,16 @@ from pydantic import BaseModel, StringConstraints, ConfigDict, Field
 UUID4Str = Annotated[str, StringConstraints(
     pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")]
 
-def readonly(field=None, *, default=...):
-    """Decorator to mark fields as readonly"""
-    return Field(default=default, json_schema_extra={'readonly': True})
 
+
+@_SpecialForm
+def Readonly(self, type):
+    """Special form to mark a field as readonly.
+    
+    Example:
+        name: ReadOnlyField[str]
+    """
+    return Annotated[type, Field(json_schema_extra={'readonly': True})]
 
 
 class JelloEntity(BaseModel):
@@ -107,7 +113,7 @@ class Ref(BaseModel, Generic[T]):
 
 
 class Category(JelloEntity):
-    name: str
+    name: Readonly[str]
     description: Optional[str] = None
     parent: Optional[Ref[Category]] = None
     products: Association[Product] = association(mappedBy='category_ref')
@@ -120,10 +126,16 @@ class Product(JelloEntity):
     price: float
     category_embedded: Category
     category_ref: Ref[Category]
+
+
     
 if __name__ == '__main__':
 
-    print("categor ref metadata:")
+    print("category name field metadata:")
+    field = Category.model_fields['name']
+    print(json.dumps(field.json_schema_extra, indent=2))
+
+    print("\ncategory ref metadata:")
     field = Product.model_fields['category_ref']
     entityType = get_args(field.annotation)[0].__name__
     print(f"entityType: {entityType}")
