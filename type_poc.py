@@ -3,7 +3,7 @@ from __future__ import annotations  # Required for self-referencing types
 import json
 import uuid
 from datetime import datetime
-from typing import _SpecialForm, Annotated, Optional, ForwardRef, List, TypeVar, Generic, Type, Any, Union
+from typing import _SpecialForm, Annotated, Literal, Optional, ForwardRef, List, TypeVar, Generic, Type, Any, Union
 from pydantic._internal._generics import get_args
 
 
@@ -29,6 +29,9 @@ class JelloEntity(BaseModel):
         extra="forbid",
         # strict=True, # Fix the issue with Pydantic and FastAPI for Enum and UUID fields before enabling this
         use_enum_values=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat(),
+        }
     )
 
     uuid: UUID4Str = Field(
@@ -45,9 +48,69 @@ class JelloEntity(BaseModel):
             "audit": True
         }
     )
-    created_by: str
+    created_by: str = "Anonymous"
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None
+
+    def save(self):
+       instance = {}
+       fields = self.model_fields
+       print(json.dumps(fields, indent=2))
+        
+
+    def describe(self):
+        pass
+
+    def create(self):
+        pass
+
+    def update(self):
+        pass
+
+    def delete(self):
+        pass
+
+    def instance(self) -> JelloEntity:
+        pass
+
+    @staticmethod
+    def _convert_value(value: Any) -> Any:
+        """Recursively convert values to JSON-serializable format."""
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict) and 'entityType' in value and 'ref_uuid' in value:  # Check for Ref dict structure
+            if "_instance" in value:
+                return value['_instance']
+            return {
+                "ref_uuid": value["ref_uuid"],
+                "entityType": value["entityType"].__name__
+            }
+        # if isinstance(value, Ref):  # Keep this for direct Ref instances
+        #     if value._instance:
+        #         return value._instance
+        #     return {
+        #         "ref_uuid": value.ref_uuid,
+        #         "entityType": value.entityType.__name__
+        #     }
+        if isinstance(value, (list, tuple, set)):
+            return [JelloEntity._convert_value(item) for item in value]
+        if isinstance(value, dict):
+            return {k: JelloEntity._convert_value(v) for k, v in value.items()}
+        if isinstance(value, BaseModel):
+            return value.to_json() if hasattr(value, 'to_json') else value.model_dump()
+        if hasattr(value, '__dict__'):
+            return JelloEntity._convert_value(value.__dict__)
+        # Fallback for any other types
+        return str(value)
+
+    def to_json(self) -> dict:
+        """Convert the entity to a JSON-serializable dictionary recursively."""
+        data = self.model_dump()
+        return self._convert_value(data)
 
 
 
@@ -89,7 +152,8 @@ def association(
     json_schema_extra = {
         'association': {
             'mappedBy': mappedBy,
-        }
+        },
+        'readonly': True,
     }
 
     if filteredBy:
@@ -99,17 +163,25 @@ def association(
         existing_extra = kwargs.pop('json_schema_extra')
         json_schema_extra.update(existing_extra)
 
+    kwargs['default'] = None
     return Field(**kwargs, json_schema_extra=json_schema_extra)    
 
 
 class Ref(BaseModel, Generic[T]):
     entityType: Type[T]
-    instance: Optional[T]
-    uuid: Optional[UUID4Str]
-    def get_instance(self) -> T:
-        if self.instance is None:
-            self.instance = {'uuid': self.uuid, 'name': 'C-123'}  # Replace with actual instance retrieval
-        return self.instance
+    ref_uuid: UUID4Str
+    _instance: Optional[T] = None
+    @property
+    def instance(self) -> T:
+       if self._instance is None:
+           self._instance = self.entityType(uuid=self.ref_uuid, name='ref-123')  # Replace with actual instance retrieval
+       return self._instance
+
+    @staticmethod
+    def from_instance(ref: T):
+        entityType = ref.__class__
+        ref_uuid = ref.uuid
+        return Ref(entityType=entityType, ref_uuid=ref_uuid)
 
 
 class Category(JelloEntity):
@@ -131,7 +203,21 @@ class Product(JelloEntity):
     
 if __name__ == '__main__':
 
-    print("category name field metadata:")
+    category1: Category = Category(name='Appliances', description='Home appliances')
+    category2: Category = Category(name='Electronics', description='Electronic products', parent=Ref.from_instance(category1))
+
+
+    print("\ncategory2:")
+    print(json.dumps(category2.to_json(), indent=2))
+
+    instance = category2.parent.instance
+    print("\ncategory2 instance:")
+    print(json.dumps(instance.to_json(), indent=2))
+
+    print("\nmaterilazed category2:")
+    print(json.dumps(category2.to_json(), indent=2))
+
+    print("\ncategory name field metadata:")
     field = Category.model_fields['name']
     print(json.dumps(field.json_schema_extra, indent=2))
 
