@@ -56,7 +56,7 @@ class JelloEntity(BaseModel):
        instance = {}
        fields = self.model_fields
        print(json.dumps(fields, indent=2))
-        
+       # TODOL implement save        
 
     def describe(self):
         pass
@@ -70,8 +70,6 @@ class JelloEntity(BaseModel):
     def delete(self):
         pass
 
-    def instance(self) -> JelloEntity:
-        pass
 
     @staticmethod
     def _convert_value(value: Any) -> Any:
@@ -113,6 +111,42 @@ class JelloEntity(BaseModel):
         return self._convert_value(data)
 
 
+
+def create_payload(entityModel: Type[JelloEntity]) -> Type[JelloEntity]:
+    """
+    Create a payload model for the given entity model.
+    Omit readonly and audit fields.
+    """
+    fields = entityModel.model_fields
+    payload_fields = {}
+    for field_name, field in fields.items():
+        # Skip audit fields
+        if field_name in ('uuid', 'created_at', 'created_by', 'updated_at', 'updated_by'):
+            continue
+            
+        # Skip fields marked as readonly
+        if (field.json_schema_extra and 
+            field.json_schema_extra.get('readonly', False)):
+            continue
+            
+        # Keep the field in payload model
+        payload_fields[field_name] = field
+    
+    # Create new model name
+    payload_name = f"{entityModel.__name__}Payload"
+    
+    # Create and return new model class
+    return type(
+        payload_name,
+        (BaseModel,),
+        {
+            '__annotations__': {
+                name: field.annotation 
+                for name, field in payload_fields.items()
+            },
+            'model_config': entityModel.model_config
+        }
+    )
 
 T = TypeVar('T', bound=JelloEntity)
 
@@ -239,5 +273,8 @@ if __name__ == '__main__':
 
     print("\nCategory schema:")
     print(json.dumps(Category.model_json_schema(), indent=2))
+
+    print("\nCategory create payload schema:")
+    print(json.dumps(create_payload(Category).model_json_schema(), indent=2))
 
 
