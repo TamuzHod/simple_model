@@ -13,6 +13,7 @@ A modern FastAPI-based application demonstrating a user management system with G
 - Friendship management
 - Comprehensive test suite
 - Database seeding utilities
+- Environment-based configuration
 
 ## Tech Stack
 
@@ -23,6 +24,7 @@ A modern FastAPI-based application demonstrating a user management system with G
 - [Uvicorn](https://www.uvicorn.org/) (>= 0.15.0) - Lightning-fast ASGI server
 - [pytest](https://docs.pytest.org/) (>= 7.0.0) - Testing framework
 - [pytest-asyncio](https://pytest-asyncio.readthedocs.io/) (>= 0.21.0) - Async support for pytest
+- [python-dotenv](https://pypi.org/project/python-dotenv/) (>= 1.0.0) - Environment variable management
 
 ## Prerequisites
 
@@ -38,10 +40,36 @@ git clone <repository-url>
 cd simple_model
 ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment:
 ```bash
-pip install -e .
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Set up environment variables:
+```bash
+cp .env_sample .env
+# Edit .env with your MongoDB credentials if needed
+```
+
+## Environment Configuration
+
+The application uses environment variables for configuration. Create a `.env` file based on `.env_sample`:
+
+```env
+MONGODB_USER=
+MONGODB_PASSWORD=
+MONGODB_HOST=localhost
+MONGODB_PORT=27017
+MONGODB_TLS=false
+```
+
+For local development without authentication, you can leave `MONGODB_USER` and `MONGODB_PASSWORD` empty.
 
 ## Database Setup
 
@@ -84,9 +112,9 @@ python scripts/seed_database.py
 ```
 
 This will create:
-- 10 random users
-- 8 friendships
-- 4 referrals
+- 5 sample users
+- 3 friendships
+- 1 referred user
 
 ## API Features
 
@@ -117,14 +145,68 @@ simple_model/
 ├── services/
 │   └── user_service.py      # Business logic
 ├── tests/
-│   └── conftest.py          # Test configurations
+│   ├── conftest.py          # Test configurations
+│   ├── test_user_service.py # Service tests
+│   └── integration/         # Integration tests
 ├── utils/
 │   └── pagination.py        # Pagination utilities
+├── scripts/
+│   └── seed_database.py     # Database seeding utility
 ├── database.py              # Database connection management
 ├── main.py                  # Application entry point
 ├── models.py               # Pydantic models
-└── scripts/
-    └── seed_database.py     # Database seeding utility
+├── requirements.txt        # Project dependencies
+├── .env_sample            # Environment variables template
+└── README.md              # This file
+```
+
+## API Examples
+
+### REST API
+
+Create a user:
+```bash
+curl -X POST http://localhost:8001/users/ \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "name": "John Doe", "password": "password123"}'
+```
+
+Get all users:
+```bash
+curl http://localhost:8001/users/
+```
+
+### GraphQL API
+
+Query users:
+```graphql
+query {
+  users(first: 10) {
+    edges {
+      node {
+        uuid
+        name
+        email
+        referralCode
+      }
+    }
+  }
+}
+```
+
+Create a user:
+```graphql
+mutation {
+  createUser(
+    email: "user@example.com"
+    name: "John Doe"
+    password: "password123"
+  ) {
+    uuid
+    name
+    email
+  }
+}
 ```
 
 ## Contributing
@@ -353,10 +435,10 @@ async def test_user_query(graphql_client: GraphQLTestClient, sample_users: Dict[
             }
         }
     """
-    
+
     variables = {"email": sample_users["alice"].email}
     response = await graphql_client.query(query, variables)
-    
+
     assert response.errors is None
     assert response.data["user"]["email"] == sample_users["alice"].email
 ```
@@ -382,7 +464,7 @@ async def make_requests(client: AsyncClient, n_requests: int) -> List[float]:
 async def test_users_endpoint_performance(client: AsyncClient):
     n_requests = 100
     timings = await make_requests(client, n_requests)
-    
+
     avg_response_time = sum(timings) / len(timings)
     assert avg_response_time < 0.1  # 100ms threshold
 ```
@@ -586,4 +668,10 @@ query UsersWithFriendsAndRefferals($pageSize: Int = 15) {
 
 ## License
 
-[Add your license information here]
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- FastAPI for the excellent web framework
+- Strawberry GraphQL for the intuitive GraphQL implementation
+- MongoDB for the flexible document database
